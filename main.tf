@@ -50,7 +50,7 @@ module "merge_files" {
     ]
   }
   command_windows              = "Get-Content $env:INTERIM_FILENAMES_WINDOWS | Set-Content -NoNewline $env:OUTPUT_FILENAME"
-  command_when_destroy_windows = "Remove-Item \"$env:OUTPUT_FILENAME\" -ErrorAction Ignore"
+  command_when_destroy_windows = "if (Test-Path \"$env:OUTPUT_FILENAME\"){ Remove-Item \"$env:OUTPUT_FILENAME\"}"
   command_unix                 = "mkdir -p -m $DIRECTORY_PERMISSIONS $PARENT_DIRECTORY && cat $INTERIM_FILENAMES_UNIX > \"$OUTPUT_FILENAME\" && chmod $FILE_PERMISSIONS \"$OUTPUT_FILENAME\""
   command_when_destroy_unix    = "rm -f \"$OUTPUT_FILENAME\""
   environment = {
