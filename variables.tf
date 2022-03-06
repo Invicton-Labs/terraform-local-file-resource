@@ -12,49 +12,37 @@ EOF
   default     = null
 }
 
-variable "interim_file_directory" {
-  description = "The directory where interim (partial) files will be stored. Defaults to `$${path.module}/large-file-parts`"
-  type        = string
-  default = null
-}
-
-variable "content" {
-  description = "The content of the file to create. Conflicts with `sensitive_content` and `content_base64`."
-  type        = string
-  default     = null
-}
-
-variable "sensitive_content" {
-  description = "The content of file to create. Will not be displayed in diffs. Conflicts with `content` and `content_base64`."
-  type        = string
-  default     = null
-}
-
-variable "content_base64" {
-  description = "The base64 encoded content of the file to create. Use this when dealing with binary data. Conflicts with `content` and `sensitive_content`."
-  type        = string
-  default     = null
-}
-
 variable "filename" {
   description = "The path of the file to create."
   type        = string
 }
 
+variable "content" {
+  description = "The content of the file to create. Conflicts with `content_base64`."
+  type        = string
+  default     = null
+}
+
+variable "content_base64" {
+  description = "The base64 encoded content of the file to create. Use this when dealing with binary data. Conflicts with `content`."
+  type        = string
+  default     = null
+}
+
 variable "file_permission" {
-  description = "The permission to set for the created file. Expects a 4-character string (e.g. \"0777\")."
+  description = "The permission to set for the created file. Expects a 4-character string (e.g. \"0777\"). Only has an effect when running on Unix-based systems."
   type        = string
   default     = "0777"
 }
 
 variable "directory_permission" {
-  description = "The permission to set for any directories created.  Expects a 4-character string (e.g. \"0777\")."
+  description = "The permission to set for any directories created.  Expects a 4-character string (e.g. \"0777\"). Only has an effect when running on Unix-based systems."
   type        = string
   default     = "0777"
 }
 
 variable "override_chunk_size" {
-    description = "Set this variable to override the default per-file chunk size. This is generally only used for testing and should not normally be used."
-    type = number
-    default = 999999
+  description = "Set this variable to override the default per-file chunk size. This is generally only used for testing and should not normally be used. If you do set it, ensure that you set it to a value that is a multiple of 76 so that it doesn't break base64 encoding where it splits."
+  type        = number
+  default = null
 }

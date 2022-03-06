@@ -1,70 +1,72 @@
+module "assert_valid_input" {
+  source  = "Invicton-Labs/assertion/null"
+  version = "~>0.2.1"
+  condition = length([for c in [
+    var.content,
+    var.content_base64
+    ] :
+    true
+    if c != null
+  ]) == 1
+  error_message = "Exactly one of `content` or `content_base64` must be provided."
+}
+
 locals {
-  // With UTF, there could be up to 4 bytes per character. So, if we limit it to 1,000,000 characters,
-  // that's certain to be less than 4MB per file. We actually use 999,999 though, since that's a 
-  // multiple of 3, which means it's a safe place to split base64-encoded files as well.
-  characters_per_file = var.override_chunk_size
+  // Whether the content came from the content_base64 variable
+  is_base64 = var.content == null
+
   // Find the correct content source
-  content = var.content != null ? var.content : (var.sensitive_content != null ? sensitive(var.sensitive_content) : var.content_base64)
-  // Calculate how many chunks we need to split it into
-  num_chunks = ceil(var.max_characters != null ? var.max_characters / local.characters_per_file : length(local.content) / local.characters_per_file)
-  // Split it into chunks
-  chunks = [
-    for i in range(0, local.num_chunks) :
-    substr(local.content, i * local.characters_per_file, local.characters_per_file)
-  ]
-  // This uses the provided interim directory, or the default if none provided. It replaces all Windows separators ("\") with Unix separators ("/"), then ensures
-  // that there is one, and only one, trailing "/"
-  interim_directory = "${trimsuffix(replace(var.interim_file_directory != null ? var.interim_file_directory : "${path.module}/large-file-parts", "\\", "/"), "/")}/"
+  content = module.assert_valid_input.checked ? (local.is_base64 ? var.content_base64 : var.content) : null
 }
 
-// This is a unique ID for this module, so the interim files never conflict with those of other copies of this same module
-resource "random_uuid" "id" {}
-
-// Create the interim files
-resource "local_file" "interim" {
-  count                = local.num_chunks
-  content              = var.content != null ? local.chunks[count.index] : null
-  sensitive_content    = var.sensitive_content != null ? local.chunks[count.index] : null
-  content_base64       = var.content_base64 != null ? local.chunks[count.index] : null
-  filename             = "${local.interim_directory}/${random_uuid.id.id}.part_${count.index}"
-  file_permission      = var.file_permission
-  directory_permission = var.directory_permission
-}
-
-// This module runs a shell script that concatenates the individual files. It's stateful, 
-// so it won't re-run unless the content itself has changed.
-module "merge_files" {
-  source  = "Invicton-Labs/shell-resource/external"
-  version = "~>0.1.2"
-  // Wait for all of the local files to be created before trying to concatenate them
+// This is the module that actually creates the file
+module "file_creator" {
+  source         = "Invicton-Labs/file-data/local"
+  version        = "~>0.1.0"
+  // Depend on the null resource so that the destroy provisioner
+  // deletes the file before we try to create a new one
   depends_on = [
-    local_file.interim
+    null_resource.large_file
   ]
-  // If the content changes, re-run this module
-  triggers = {
-    content  = sha256(local.content)
-    filename = var.filename
-    interim_files = [
-      for f in local_file.interim :
-      f.filename
-    ]
+
+  // Pass the content, filename, and permissions through unaltered
+  content              = var.content
+  content_base64       = var.content_base64
+  filename             = var.filename
+  directory_permission = var.directory_permission
+  file_permission      = var.file_permission
+
+  // If the number of characters is provided, use that. Otherwise, calculate it from the content length
+  max_characters = var.max_characters == null ? length(local.content) : var.max_characters
+
+  // Don't want to append, want to replace
+  append = false
+  // Since this module is intended to act as a resource and not a data source, always wait for apply
+  // if the file actually needs creation of modifications
+  force_wait_for_apply = module.file_creator.must_be_modified
+
+  // If a value is provided, use it. Otherwise, use the default value of the data module
+  override_chunk_size = var.override_chunk_size == null ? module.file_creator.default_chunk_size : var.override_chunk_size
+}
+
+resource "null_resource" "large_file" {
+  triggers = sensitive({
+    // If the filename changes, that needs a re-create
+    filename             = var.filename
+    max_characters       = var.max_characters
+    file_permission      = var.file_permission
+    directory_permission = var.directory_permission
+    // If the content changes, that needs a re-create
+    content_hash = base64sha256(local.content)
+  })
+
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = dirname("/") == "\\" ? ["powershell.exe"] : []
+    command     = dirname("/") == "\\" ? "if (Test-Path \"$env:TF_LOCAL_FILE_NAME\") {Remove-Item \"$env:TF_LOCAL_FILE_NAME\"}" : "rm -f \"$TF_LOCAL_FILE_NAME\""
+    environment = {
+      TF_LOCAL_FILE_NAME = abspath(self.triggers.filename)
+    }
+    working_dir = path.module
   }
-  command_windows              = "Get-Content $env:INTERIM_FILENAMES_WINDOWS | Set-Content -NoNewline $env:OUTPUT_FILENAME"
-  command_when_destroy_windows = "if (Test-Path \"$env:OUTPUT_FILENAME\"){ Remove-Item \"$env:OUTPUT_FILENAME\"}"
-  command_unix                 = "mkdir -p -m $DIRECTORY_PERMISSIONS $PARENT_DIRECTORY && cat $INTERIM_FILENAMES_UNIX > \"$OUTPUT_FILENAME\" && chmod $FILE_PERMISSIONS \"$OUTPUT_FILENAME\""
-  command_when_destroy_unix    = "rm -f \"$OUTPUT_FILENAME\""
-  environment = {
-    DIRECTORY_PERMISSIONS = var.directory_permission
-    FILE_PERMISSIONS      = var.file_permission
-  }
-  triggerless_environment = {
-    // Anything that references abspath should be in a triggerless environment, since we don't want it to re-run if a new apply is done on a system with a different file structure
-    // The filenames themselves are referenced in the "triggers" section, so this will still re-run if the input filename variable changes
-    OUTPUT_FILENAME           = abspath(var.filename)
-    INTERIM_FILENAMES_WINDOWS = "\"${join("\", \"", [for idx, file in local_file.interim : abspath(file.filename)])}\""
-    INTERIM_FILENAMES_UNIX    = "\"${join("\" \"", [for idx, file in local_file.interim : abspath(file.filename)])}\""
-    PARENT_DIRECTORY          = dirname(abspath(var.filename))
-  }
-  working_dir   = path.module
-  fail_on_error = true
 }
